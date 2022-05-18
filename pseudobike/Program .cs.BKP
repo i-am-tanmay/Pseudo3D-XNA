@@ -1,0 +1,313 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Audio;
+using Microsoft.Xna.Framework.Content;
+using Microsoft.Xna.Framework.Graphics;
+using Microsoft.Xna.Framework.Input;
+using Microsoft.Xna.Framework.Media;
+
+namespace pseudobike
+{
+    class Program : Game
+    {
+        static void Main(string[] args)
+        {
+            using (Program p = new Program())
+            {
+                p.Run();
+            }
+        }
+
+        private FrameCounter _frameCounter = new FrameCounter();
+        GraphicsDeviceManager graphics;
+        SpriteBatch spritebatch;
+
+        Program()
+        {
+            graphics = new GraphicsDeviceManager(this);
+            Content.RootDirectory = "Content";
+
+            graphics.PreferredBackBufferWidth = 1024;
+            graphics.PreferredBackBufferHeight = 768;
+            graphics.IsFullScreen = false;
+        }
+
+        int fps;
+        int width;
+        int height;
+        RoadSegment[] segments;
+        float resolution;
+        int roadWidth;
+        int segmentLength;
+        int rumbleLength;
+        int trackLength;
+        int lanes;
+        int fieldOfView;
+        int cameraHeight;
+        float cameraDepth;
+        int drawDistance;
+        float playerX;
+        float playerZ;
+        float position;
+        float speed;
+        int maxSpeed;
+        float accel;
+        float breaking;
+        float decel;
+        float offRoadDecel;
+        float offRoadLimit;
+
+        Texture2D plaintexture;
+        Texture2D road;
+        BasicEffect basicEffect;
+        VertexPositionTexture[] vert;
+        short[] ind;
+
+        protected override void Initialize()
+        {
+            base.Initialize();
+
+            fps = 60;                      // how many 'update' frames per second
+            width = 1024;                    // logical canvas width
+            height = 768;                     // logical canvas height
+            /*resolution = null;                    // scaling factor to provide resolution independence (computed)*/
+            roadWidth = 2000;                    // actually half the roads width, easier math if the road spans from -roadWidth to +roadWidth
+            segmentLength = 200;                     // length of a single segment
+            rumbleLength = 3;                       // number of segments per red/white rumble strip
+            trackLength = 0;                    // z length of entire track (computed)
+            lanes = 3;                       // number of lanes
+            fieldOfView = 100;                     // angle (degrees) for field of view
+            cameraHeight = 1000;                    // z height of camera
+            cameraDepth = 1 / (float)Math.Tan((fieldOfView / 2) * Math.PI / 180);                    // z distance camera is from screen (computed)
+            drawDistance = 300;                     // number of segments to draw
+            playerX = 0;                       // player x offset from center of road (-1 to 1 to stay independent of roadWidth)
+            /*playerZ = null;                    // player relative z distance from camera (computed)*/
+            position = 0;                       // current camera Z position (add playerZ to get player's absolute Z position)
+            speed = 0;                       // current speed
+            maxSpeed = segmentLength * fps;     // top speed (ensure we can't move more than 1 segment in a single frame to make collision detection easier)
+            accel = maxSpeed / 5;             // acceleration rate - tuned until it 'felt' right
+            breaking = -maxSpeed;               // deceleration rate when braking
+            decel = -maxSpeed / 5;             // 'natural' deceleration rate when neither accelerating, nor braking
+            offRoadDecel = -maxSpeed / 2;             // off road deceleration is somewhere in between
+            offRoadLimit = maxSpeed / 4;             // limit when off road deceleration no longer applies (e.g. you can always go at least this speed even when off road)
+
+            font = Content.Load<SpriteFont>("Arial");
+            plaintexture = new Texture2D(GraphicsDevice, 1, 1, false, SurfaceFormat.Color);
+            plaintexture.SetData<Color>(new Color[] { Color.White });
+            road = new Texture2D(GraphicsDevice, 1, 1, false, SurfaceFormat.Color);
+
+            basicEffect = new BasicEffect(GraphicsDevice);
+            basicEffect.Texture = road;
+            basicEffect.TextureEnabled = true;
+
+            vert = new VertexPositionTexture[4];
+            vert[0].TextureCoordinate = new Vector2(0, 0);
+            vert[1].TextureCoordinate = new Vector2(1, 0);
+            vert[2].TextureCoordinate = new Vector2(0, 1);
+            vert[3].TextureCoordinate = new Vector2(1, 1);
+            ind = new short[6];
+            ind[0] = 0;
+            ind[1] = 2;
+            ind[2] = 1;
+            ind[3] = 1;
+            ind[4] = 2;
+            ind[5] = 3;
+
+            resetRoad();
+        }
+
+        protected override void LoadContent()
+        {
+            spritebatch = new SpriteBatch(GraphicsDevice);
+        }
+
+        protected override void Update(GameTime gameTime)
+        {
+            float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
+
+            position = (position + dt * speed) % trackLength;
+
+            float dx = dt * 2 * (speed / maxSpeed);
+            // playerX += keyleft?-dx keyright?+dx
+
+            speed += accel * dt;
+            speed = 500;
+            if (((playerX < -1) || (playerX > 1)) && (speed > offRoadLimit)) speed += offRoadDecel * dt;
+
+            playerX = MathHelper.Clamp(playerX, -2, 2);
+            speed = MathHelper.Clamp(speed, 0, maxSpeed);
+
+            base.Update(gameTime);
+        }
+
+        SpriteFont font;
+        protected override void Draw(GameTime gameTime)
+        {
+            GraphicsDevice.Clear(Color.CornflowerBlue);
+
+            var deltaTime = (float)gameTime.ElapsedGameTime.TotalSeconds;
+
+            _frameCounter.Update(deltaTime);
+
+            var fps = string.Format("FPS: {0}", _frameCounter.AverageFramesPerSecond);
+
+            DrawRoadSegments();
+
+            spritebatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.PointClamp, null, null, null);
+            spritebatch.DrawString(font, fps, new Vector2(1, 1), Color.Black);
+            spritebatch.End();
+
+            base.Draw(gameTime);
+        }
+
+        private void DrawRoadSegments()
+        {
+            RoadSegment baseSegment = segments[(int)Math.Floor(position / segmentLength) % segments.Length];
+            float maxY = height;
+
+            spritebatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.PointClamp, null, null, null);
+            for (int j = 0; j < drawDistance; j++)
+            {
+                int i = (baseSegment.seqnum + j) % segments.Length;
+                ProjectSegment(segments[i], segments[i].seqnum < baseSegment.seqnum);
+                if ((segments[i].p1_camera.Z <= cameraDepth) || (segments[i].p2_screen.Y >= maxY)) continue;
+
+                spritebatch.Draw(plaintexture, new Rectangle(0, (int)segments[i].p2_screen.Y, width, (int)(segments[i].p1_screen.Y - segments[i].p2_screen.Y)), segments[i].isLightColor ? Color.LightGreen : Color.DarkGreen);
+            }
+            spritebatch.End();
+
+            for (int j = 0; j < drawDistance; j++)
+            {
+                int i = (baseSegment.seqnum + j) % segments.Length;
+                if ((segments[i].p1_camera.Z <= cameraDepth) || (segments[i].p2_screen.Y >= maxY)) continue;
+
+                float r1 = segments[i].p1_screen.Z / Math.Max(6, 2 * lanes);
+                float r2 = segments[i].p2_screen.Z / Math.Max(6, 2 * lanes);
+
+                DrawPolygon(new Vector3(segments[i].p2_screen.X - segments[i].p2_screen.Z - r2, segments[i].p2_screen.Y, 0),
+                    new Vector3(segments[i].p2_screen.X - segments[i].p2_screen.Z, segments[i].p2_screen.Y, 0),
+                    new Vector3(segments[i].p1_screen.X - segments[i].p1_screen.Z - r1, segments[i].p1_screen.Y, 0),
+                    new Vector3(segments[i].p1_screen.X - segments[i].p1_screen.Z, segments[i].p1_screen.Y, 0),
+                    segments[i].isLightColor ? Color.LightSlateGray : Color.DarkSlateGray);
+                DrawPolygon(new Vector3(segments[i].p2_screen.X + segments[i].p2_screen.Z, segments[i].p2_screen.Y, 0),
+                    new Vector3(segments[i].p2_screen.X + segments[i].p2_screen.Z + r2, segments[i].p2_screen.Y, 0),
+                    new Vector3(segments[i].p1_screen.X + segments[i].p1_screen.Z, segments[i].p1_screen.Y, 0),
+                    new Vector3(segments[i].p1_screen.X + segments[i].p1_screen.Z + r1, segments[i].p1_screen.Y, 0),
+                    segments[i].isLightColor ? Color.LightSlateGray : Color.DarkSlateGray);
+                DrawPolygon(new Vector3(segments[i].p2_screen.X - segments[i].p2_screen.Z, segments[i].p2_screen.Y, 0),
+                    new Vector3(segments[i].p2_screen.X + segments[i].p2_screen.Z, segments[i].p2_screen.Y, 0),
+                    new Vector3(segments[i].p1_screen.X - segments[i].p1_screen.Z, segments[i].p1_screen.Y, 0),
+                    new Vector3(segments[i].p1_screen.X + segments[i].p1_screen.Z, segments[i].p1_screen.Y, 0),
+                    segments[i].isLightColor ? Color.LightGray : Color.DarkGray);
+                /*Debugger.Log(0, null, new Vector3(segments[i].p2_screen.X - segments[i].p2_screen.Z, segments[i].p2_screen.Y, 0).ToString() + "\n" +
+                        new Vector3(segments[i].p2_screen.X + segments[i].p2_screen.Z, segments[i].p2_screen.Y, 0).ToString() + "\n" +
+                        new Vector3(segments[i].p1_screen.X - segments[i].p1_screen.Z, segments[i].p1_screen.Y, 0).ToString() + "\n" +
+                        new Vector3(segments[i].p1_screen.X + segments[i].p1_screen.Z, segments[i].p1_screen.Y, 0).ToString() + "\n\n");*/
+                if (segments[i].isLightColor)
+                {
+                    float l1 = segments[i].p1_screen.Z / Math.Max(32, 8 * lanes);
+                    float l2 = segments[i].p2_screen.Z / Math.Max(32, 8 * lanes);
+                    float lanez1 = segments[i].p1_screen.Z * 2 / lanes;
+                    float lanez2 = segments[i].p2_screen.Z * 2 / lanes;
+                    float lanex1 = segments[i].p1_screen.X - segments[i].p1_screen.Z + lanez1;
+                    float lanex2 = segments[i].p2_screen.X - segments[i].p2_screen.Z + lanez2;
+                    for (int k = 1; k < lanes; lanex1 += lanez1, lanex2 += lanez2, k++)
+                    {
+                        DrawPolygon(new Vector3(lanex2 - l2 / 2, segments[i].p2_screen.Y, 0),
+                            new Vector3(lanex2 + l2 / 2, segments[i].p2_screen.Y, 0),
+                            new Vector3(lanex1 - l1 / 2, segments[i].p1_screen.Y, 0),
+                            new Vector3(lanex1 + l1 / 2, segments[i].p1_screen.Y, 0),
+                            Color.White);
+                    }
+                }
+
+                maxY = segments[i].p2_screen.Y;
+            }
+        }
+
+        private void DrawPolygon(Vector3 topleft, Vector3 topright, Vector3 botleft, Vector3 botright, Color color)
+        {
+            Vector3 otl = topleft, otr = topright;
+            topleft = ScreenToTexturePosition(botleft);
+            topright = ScreenToTexturePosition(botright);
+            botleft = ScreenToTexturePosition(otl);
+            botright = ScreenToTexturePosition(otr);
+
+            road.SetData<Color>(new Color[] { color });
+
+            vert[0].Position = topleft;
+            vert[1].Position = topright;
+            vert[2].Position = botleft;
+            vert[3].Position = botright;
+
+            basicEffect.CurrentTechnique.Passes[0].Apply();
+            GraphicsDevice.DrawUserIndexedPrimitives<VertexPositionTexture>(
+                PrimitiveType.TriangleList, vert, 0, 4, ind, 0, 2);
+        }
+
+        private Vector3 ScreenToTexturePosition(Vector3 input)
+        {
+            input.X -= width / 2;
+            input.X /= width;
+            input.Y -= height / 2;
+            input.Y /= -height;
+            return input;
+        }
+
+        private void ProjectSegment(RoadSegment seg, bool looped)
+        {
+            seg.p1_camera.X = seg.p1_world.X - (playerX * roadWidth);
+            seg.p1_camera.Y = seg.p1_world.Y - cameraHeight;
+            seg.p1_camera.Z = seg.p1_world.Z - position + (looped ? trackLength : 0);
+            seg.p1_screenScale = seg.p1_camera.Z == 0 ? 0 : cameraDepth / seg.p1_camera.Z;
+            seg.p1_screen.X = (float)Math.Round((width / 2) + (seg.p1_screenScale * seg.p1_camera.X * width / 2));
+            seg.p1_screen.Y = (float)Math.Round((height / 2) - (seg.p1_screenScale * seg.p1_camera.Y * height / 2));
+            seg.p1_screen.Z = (float)Math.Round(seg.p1_screenScale * roadWidth * width / 2);
+
+            seg.p2_camera.X = seg.p2_world.X - (playerX * roadWidth);
+            seg.p2_camera.Y = seg.p2_world.Y - cameraHeight;
+            seg.p2_camera.Z = seg.p2_world.Z - position;
+            seg.p2_screenScale = seg.p2_camera.Z == 0 ? 0 : cameraDepth / seg.p2_camera.Z;
+            seg.p2_screen.X = (float)Math.Round((width / 2) + (seg.p2_screenScale * seg.p2_camera.X * width / 2));
+            seg.p2_screen.Y = (float)Math.Round((height / 2) - (seg.p2_screenScale * seg.p2_camera.Y * height / 2));
+            seg.p2_screen.Z = (float)Math.Round(seg.p2_screenScale * roadWidth * width / 2);
+        }
+
+        private void resetRoad()
+        {
+            segments = new RoadSegment[500];
+
+            for (int i = 0; i < 500; i++)
+            {
+                segments[i] = new RoadSegment();
+                segments[i].seqnum = i;
+                segments[i].p1_world.Z = i * segmentLength;
+                segments[i].p2_world.Z = (i + 1) * segmentLength;
+                segments[i].isLightColor = ((int)Math.Floor((float)(i / rumbleLength)) % 2) == 0 ? false : true;
+            }
+
+            trackLength = 500 * segmentLength;
+        }
+    }
+
+    public class RoadSegment
+    {
+        public int seqnum;
+        public Vector3 p1_world, p1_camera, p1_screen;
+        public Vector3 p2_world, p2_camera, p2_screen;
+        public float p1_screenScale, p2_screenScale;
+        public bool isLightColor;
+
+        public RoadSegment()
+        {
+            seqnum = -1;
+            p1_world = p1_camera = p1_screen = p2_world = p2_camera = p2_screen = Vector3.Zero;
+            p1_screenScale = p2_screenScale = 1f;
+            isLightColor = true;
+        }
+    }
+
+}

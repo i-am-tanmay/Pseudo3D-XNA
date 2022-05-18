@@ -1,0 +1,7 @@
+E:\FNA_Projects\FNA\bin\Debug\FNA.dll.config
+E:\FNA_Projects\FNA\bin\Debug\FNA.dll
+E:\FNA_Projects\FNA\bin\Debug\FNA.pdb
+E:\FNA_Projects\FNA\obj\Debug\FNA.csproj.CoreCompileInputs.cache
+E:\FNA_Projects\FNA\obj\Debug\FNA.dll
+E:\FNA_Projects\FNA\obj\Debug\FNA.pdb
+E:\FNA_Projects\FNA\obj\Debug\FNA.csproj.AssemblyReference.cache
